@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>GEX Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+<style>
+  :root {
+    --bg: #0a0e1a;
+    --panel: #111827;
+    --panel-2: #1f2937;
+    --border: #1f2937;
+    --border-light: #374151;
+    --text: #f3f4f6;
+    --text-2: #d1d5db;
+    --muted: #6b7280;
+    --green: #10b981;
+    --green-soft: #10b98122;
+    --red: #ef4444;
+    --red-soft: #ef444422;
+    --blue: #3b82f6;
+    --blue-soft: #3b82f622;
+    --yellow: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; padding: 24px;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, 'SF Pro Display', 'Inter', Segoe UI, Roboto, sans-serif;
+    font-feature-settings: 'tnum' 1;
+    min-height: 100vh;
+  }
+  .container { max-width: 1400px; margin: 0 auto; }
+
+  header {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 20px;
+  }
+  header .title {
+    font-size: 18px; font-weight: 600; color: var(--text);
+    display: flex; align-items: center; gap: 8px;
+  }
+  header .title .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--yellow);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .tabs { display: flex; gap: 4px; margin-left: 12px; }
+  .tab {
+    padding: 7px 14px; font-size: 13px; font-weight: 500;
+    background: transparent; color: var(--muted);
+    border: 1px solid transparent; border-radius: 8px;
+    cursor: pointer; transition: all 0.2s;
+  }
+  .tab:hover { color: var(--text-2); background: var(--panel); }
+  .tab.active {
+    background: var(--blue); color: white;
+    border-color: var(--blue);
+  }
+
+  .filters-row {
+    display: flex; gap: 8px; align-items: center;
+    margin-bottom: 16px; flex-wrap: wrap;
+  }
+  .symbol-input {
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border-light); padding: 9px 14px;
+    border-radius: 8px; font-size: 14px; font-weight: 600;
+    width: 120px; text-transform: uppercase;
+    transition: border-color 0.2s;
+  }
+  .symbol-input:focus { outline: none; border-color: var(--blue); }
+
+  .pill-group { display: flex; background: var(--panel); border-radius: 8px; padding: 3px; gap: 2px; }
+  .pill {
+    padding: 7px 14px; font-size: 13px; font-weight: 500;
+    background: transparent; color: var(--muted);
+    border: none; border-radius: 6px;
+    cursor: pointer; transition: all 0.2s;
+  }
+  .pill:hover { color: var(--text-2); }
+  .pill.active { background: var(--blue); color: white; }
+
+  .expiry-select {
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border-light); padding: 9px 14px;
+    border-radius: 8px; font-size: 13px; cursor: pointer;
+    transition: border-color 0.2s; min-width: 160px;
+  }
+  .expiry-select:focus { outline: none; border-color: var(--blue); }
+
+  .refresh-btn {
+    background: var(--blue); color: white;
+    border: none; padding: 9px 18px;
+    border-radius: 8px; font-size: 13px; font-weight: 500;
+    cursor: pointer; transition: all 0.2s;
+    margin-left: auto;
+  }
+  .refresh-btn:hover { background: #2563eb; transform: translateY(-1px); }
+  .refresh-btn:active { transform: translateY(0); }
+  .refresh-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+  .summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px; margin-bottom: 20px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px 16px;
+    transition: all 0.3s; opacity: 0;
+    animation: fadeInUp 0.4s forwards;
+  }
+  .card:hover { border-color: var(--border-light); transform: translateY(-2px); }
+  .summary .card:nth-child(1) { animation-delay: 0.05s; }
+  .summary .card:nth-child(2) { animation-delay: 0.1s; }
+  .summary .card:nth-child(3) { animation-delay: 0.15s; }
+  .summary .card:nth-child(4) { animation-delay: 0.2s; }
+  .summary .card:nth-child(5) { animation-delay: 0.25s; }
+  .summary .card:nth-child(6) { animation-delay: 0.3s; }
+  .summary .card:nth-child(7) { animation-delay: 0.35s; }
+  .summary .card:nth-child(8) { animation-delay: 0.4s; }
+
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .card .label {
+    color: var(--muted); font-size: 11px; font-weight: 500;
+    letter-spacing: 0.02em; text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .card .value {
+    font-size: 22px; font-weight: 700;
+    color: var(--text); line-height: 1.1;
+    transition: color 0.3s;
+  }
+  .card .sub {
+    font-size: 11px; color: var(--muted); margin-top: 4px;
+    font-weight: 500;
+  }
+  .card .value.green { color: var(--green); }
+  .card .value.red { color: var(--red); }
+
+  .chart-panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px 24px 24px;
+    opacity: 0; animation: fadeInUp 0.5s 0.4s forwards;
+  }
+  .chart-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .chart-title {
+    font-size: 15px; font-weight: 600; color: var(--text);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .chart-title::before {
+    content: ''; width: 3px; height: 16px; background: var(--blue);
+    border-radius: 2px;
+  }
+  .chart-container { height: 480px; position: relative; }
+
+  .loading {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; padding: 80px 20px;
+    color: var(--muted); font-size: 14px;
+  }
+  .spinner {
+    width: 28px; height: 28px;
+    border: 3px solid var(--border-light);
+    border-top-color: var(--blue);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 14px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .error {
+    background: var(--red-soft); border: 1px solid var(--red);
+    color: var(--red); padding: 14px 18px; border-radius: 10px;
+    font-size: 14px;
+  }
+
+  .legend { display: flex; gap: 16px; align-items: center; font-size: 12px; color: var(--muted); }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-box { width: 12px; height: 12px; border-radius: 3px; }
+
+  #content { transition: opacity 0.3s; }
+  #content.loading-state { opacity: 0.4; pointer-events: none; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div class="title">
+      <span class="dot"></span>
+      Gamma Exposure (GEX)
+    </div>
+    <div class="tabs">
+      <button class="tab active">Gamma Exposure</button>
+      <button class="tab">Open Interest</button>
+    </div>
+  </header>
+
+  <div class="filters-row">
+    <input id="symbol" class="symbol-input" value="SPX">
+    <div class="pill-group">
+      <button class="pill active" data-view="net">Net GEX</button>
+      <button class="pill" data-view="callput">Call/Put</button>
+    </div>
+    <select id="expiry" class="expiry-select">
+      <option value="0">Nearest expiry</option>
+      <option value="1">+1 expiry</option>
+      <option value="2">+2 expiry</option>
+      <option value="3">+3 expiry</option>
+      <option value="4">+4 expiry</option>
+    </select>
+    <button class="refresh-btn" id="refresh">↻ Refresh</button>
+  </div>
+
+  <div id="status" class="loading">
+    <div class="spinner"></div>
+    <div>Loading GEX data...</div>
+  </div>
+
+  <div id="content" style="display: none;">
+    <div class="summary">
+      <div class="card">
+        <div class="label">Spot Price</div>
+        <div class="value" id="spot">—</div>
+        <div class="sub" id="symbolDisp">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Net GEX</div>
+        <div class="value" id="netGex">—</div>
+        <div class="sub" id="netGexRatio">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Call GEX</div>
+        <div class="value green" id="callGex">—</div>
+        <div class="sub" id="callOi">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Put GEX</div>
+        <div class="value red" id="putGex">—</div>
+        <div class="sub" id="putOi">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Total GEX</div>
+        <div class="value" id="totalGex">—</div>
+        <div class="sub" id="totalOi">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Call Wall</div>
+        <div class="value" id="callWall">—</div>
+        <div class="sub" id="callWallPct">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Put Wall</div>
+        <div class="value" id="putWall">—</div>
+        <div class="sub" id="putWallPct">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Zero Gamma</div>
+        <div class="value" id="zeroGamma">—</div>
+        <div class="sub" id="zeroGammaPct">—</div>
+      </div>
+    </div>
+
+    <div class="chart-panel">
+      <div class="chart-header">
+        <div class="chart-title">Strike Profile</div>
+        <div class="legend">
+          <div class="legend-item"><div class="legend-box" style="background:#10b981"></div>Call Gamma</div>
+          <div class="legend-item"><div class="legend-box" style="background:#ef4444"></div>Put Gamma</div>
+          <div class="legend-item"><div class="legend-box" style="background:#3b82f6"></div>Spot</div>
+        </div>
+      </div>
+      <div class="chart-container"><canvas id="chart"></canvas></div>
+    </div>
+  </div>
+</div>
+
+<script>
+if (window.Chart && window['chartjs-plugin-annotation']) {
+  Chart.register(window['chartjs-plugin-annotation']);
+}
+
+let chart = null;
+let currentData = null;
+let currentView = 'net';
+
+function fmtMoney(n, digits = 2) {
+  if (n === null || n === undefined || isNaN(n)) return '—';
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  if (abs >= 1e12) return sign + '$' + (abs / 1e12).toFixed(digits) + 'T';
+  if (abs >= 1e9)  return sign + '$' + (abs / 1e9).toFixed(digits) + 'B';
+  if (abs >= 1e6)  return sign + '$' + (abs / 1e6).toFixed(digits) + 'M';
+  if (abs >= 1e3)  return sign + '$' + (abs / 1e3).toFixed(digits) + 'K';
+  return sign + '$' + abs.toFixed(0);
+}
+
+function fmtPct(value, ref) {
+  if (!ref || !value) return '—';
+  const pct = ((value - ref) / ref) * 100;
+  const sign = pct >= 0 ? '+' : '';
+  const color = pct >= 0 ? 'var(--green)' : 'var(--red)';
+  return `<span style="color:${color}">${sign}${pct.toFixed(2)}%</span>`;
+}
+
+function fmtNum(n) {
+  if (n === null || n === undefined) return '—';
+  return n.toLocaleString();
+}
+
+async function loadData() {
+  const symbol = document.getElementById('symbol').value.toUpperCase();
+  const expiryIndex = document.getElementById('expiry').value;
+  const statusEl = document.getElementById('status');
+  const contentEl = document.getElementById('content');
+  const refreshBtn = document.getElementById('refresh');
+
+  refreshBtn.disabled = true;
+  if (!currentData) {
+    statusEl.style.display = 'flex';
+    contentEl.style.display = 'none';
+  } else {
+    contentEl.classList.add('loading-state');
+  }
+
+  try {
+    const r = await fetch(`/api/gex?symbol=${symbol}&expiry_index=${expiryIndex}`);
+    if (!r.ok) throw new Error('API error ' + r.status);
+    const data = await r.json();
+    currentData = data;
+    renderAll();
+    statusEl.style.display = 'none';
+    contentEl.style.display = 'block';
+    // Restart card animations
+    document.querySelectorAll('.card, .chart-panel').forEach(el => {
+      el.style.animation = 'none';
+      el.offsetHeight; // force reflow
+      el.style.animation = '';
+    });
+  } catch (e) {
+    statusEl.innerHTML = `<div class="error">Error: ${e.message}</div>`;
+  } finally {
+    refreshBtn.disabled = false;
+    contentEl.classList.remove('loading-state');
+  }
+}
+
+function renderAll() {
+  const data = currentData;
+  if (!data) return;
+
+  const totalOiCall = data.strikes.reduce((s, x) => s + (x.call_oi || 0), 0);
+  const totalOiPut  = data.strikes.reduce((s, x) => s + (x.put_oi  || 0), 0);
+  const totalGex = Math.abs(data.summary.total_call_gex) + Math.abs(data.summary.total_put_gex);
+
+  document.getElementById('spot').textContent = '$' + data.spot.toFixed(2);
+  document.getElementById('symbolDisp').textContent = data.symbol;
+
+  document.getElementById('netGex').textContent = fmtMoney(data.summary.net_gex);
+  document.getElementById('netGex').className = 'value ' + (data.summary.net_gex >= 0 ? 'green' : 'red');
+  const ratio = data.summary.total_put_gex !== 0
+    ? (data.summary.total_call_gex / Math.abs(data.summary.total_put_gex)).toFixed(2)
+    : '—';
+  document.getElementById('netGexRatio').textContent = 'Ratio ' + ratio;
+
+  document.getElementById('callGex').textContent = fmtMoney(data.summary.total_call_gex);
+  document.getElementById('callOi').textContent = fmtNum(totalOiCall) + ' OI';
+
+  document.getElementById('putGex').textContent = fmtMoney(data.summary.total_put_gex);
+  document.getElementById('putOi').textContent = fmtNum(totalOiPut) + ' OI';
+
+  document.getElementById('totalGex').textContent = fmtMoney(totalGex);
+  document.getElementById('totalOi').textContent = fmtNum(totalOiCall + totalOiPut) + ' OI';
+
+  document.getElementById('callWall').textContent = data.summary.call_wall ?? '—';
+  document.getElementById('callWallPct').innerHTML = fmtPct(data.summary.call_wall, data.spot);
+
+  document.getElementById('putWall').textContent = data.summary.put_wall ?? '—';
+  document.getElementById('putWallPct').innerHTML = fmtPct(data.summary.put_wall, data.spot);
+
+  document.getElementById('zeroGamma').textContent =
+    data.summary.zero_gamma ? data.summary.zero_gamma.toFixed(2) : 'N/A';
+  document.getElementById('zeroGammaPct').innerHTML =
+    data.summary.zero_gamma ? fmtPct(data.summary.zero_gamma, data.spot) : '—';
+
+  renderChart(data);
+}
+
+function renderChart(data) {
+  const strikes = data.strikes.map(s => s.strike);
+  const callGex = data.strikes.map(s => s.call_gex);
+  const putGex  = data.strikes.map(s => s.put_gex);
+  const netGex  = data.strikes.map(s => s.net_gex);
+
+  // Find closest strike index to spot for annotation
+  let spotIdx = 0, minDist = Infinity;
+  strikes.forEach((s, i) => {
+    const d = Math.abs(s - data.spot);
+    if (d < minDist) { minDist = d; spotIdx = i; }
+  });
+  const spotFrac = (data.spot - strikes[0]) / (strikes[strikes.length - 1] - strikes[0]) * (strikes.length - 1);
+
+  const isNet = currentView === 'net';
+
+  let datasets;
+  if (isNet) {
+    // Color bars green if positive, red if negative
+    datasets = [{
+      label: 'Net GEX',
+      data: netGex,
+      backgroundColor: netGex.map(v => v >= 0 ? '#10b981' : '#ef4444'),
+      borderRadius: 3,
+      borderSkipped: false,
+    }];
+  } else {
+    datasets = [
+      {
+        label: 'Call Gamma',
+        data: callGex,
+        backgroundColor: '#10b981',
+        borderRadius: 3,
+        borderSkipped: false,
+      },
+      {
+        label: 'Put Gamma',
+        data: putGex,
+        backgroundColor: '#ef4444',
+        borderRadius: 3,
+        borderSkipped: false,
+      },
+    ];
+  }
+
+  if (chart) chart.destroy();
+  const ctx = document.getElementById('chart').getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels: strikes, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: {
+        duration: 800,
+        easing: 'easeOutQuart',
+      },
+      transitions: {
+        active: { animation: { duration: 300 } },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#111827',
+          borderColor: '#374151',
+          borderWidth: 1,
+          padding: 10,
+          titleColor: '#f3f4f6',
+          bodyColor: '#d1d5db',
+          cornerRadius: 8,
+          displayColors: true,
+          callbacks: {
+            title: items => 'Strike ' + items[0].label,
+            label: ctx => ctx.dataset.label + ': ' + fmtMoney(ctx.parsed.y),
+          },
+        },
+        annotation: {
+          annotations: {
+            spotLine: {
+              type: 'line',
+              xMin: spotFrac,
+              xMax: spotFrac,
+              borderColor: '#3b82f6',
+              borderWidth: 2,
+              borderDash: [5, 4],
+              label: {
+                display: true,
+                content: 'Spot',
+                position: 'start',
+                backgroundColor: '#3b82f6',
+                color: 'white',
+                font: { size: 11, weight: '600' },
+                padding: { x: 6, y: 3 },
+                borderRadius: 4,
+              },
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          stacked: !isNet,
+          ticks: {
+            color: '#6b7280',
+            font: { size: 11 },
+            maxRotation: 0,
+            autoSkip: true,
+            maxTicksLimit: 20,
+          },
+          grid: { display: false },
+          border: { color: '#374151' },
+        },
+        y: {
+          stacked: !isNet,
+          ticks: {
+            color: '#6b7280',
+            font: { size: 11 },
+            callback: v => fmtMoney(v, 1),
+          },
+          grid: { color: '#1f2937' },
+          border: { display: false },
+        },
+      },
+    },
+  });
+}
+
+document.getElementById('refresh').addEventListener('click', loadData);
+document.getElementById('symbol').addEventListener('keydown', e => {
+  if (e.key === 'Enter') loadData();
+});
+document.getElementById('expiry').addEventListener('change', loadData);
+
+document.querySelectorAll('.pill').forEach(p => {
+  p.addEventListener('click', () => {
+    document.querySelectorAll('.pill').forEach(x => x.classList.remove('active'));
+    p.classList.add('active');
+    currentView = p.dataset.view;
+    if (currentData) renderChart(currentData);
+  });
+});
+
+// Auto-load on first visit
+loadData();
+</script>
+</body>
+</html>
