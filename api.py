@@ -17,9 +17,40 @@ REFRESH_TOKEN = os.environ["TASTYTRADE_REFRESH_TOKEN"]
 
 app = FastAPI()
 
+# Caches
+_session = None
+_chain_cache = {}   # symbol -> (chain, timestamp)
+CHAIN_TTL = 300     # 5 min
+_session_lock = asyncio.Lock()
+_chain_lock = asyncio.Lock()
+
+
+async def get_session():
+    global _session
+    async with _session_lock:
+        if _session is None:
+            _session = Session(CLIENT_SECRET, REFRESH_TOKEN)
+        return _session
+
+
+async def get_chain(session, symbol):
+    import time
+    async with _chain_lock:
+        cached = _chain_cache.get(symbol)
+        if cached and (time.time() - cached[1] < CHAIN_TTL):
+            return cached[0]
+        chain = await get_option_chain(session, symbol)
+        _chain_cache[symbol] = (chain, time.time())
+        return chain
+
 
 async def fetch_gex(symbol: str = "SPY", expiry_index: int = 0, strikes_each_side: int = 20):
-    session = Session(CLIENT_SECRET, REFRESH_TOKEN)
+    session = await get_session()
+    chain = await get_chain(session, symbol)
+
+    available = sorted(chain.keys())
+    expiry = available[expiry_index]
+    contracts = chain[expiry]
 
     # Spot price
     async with DXLinkStreamer(session) as streamer:
@@ -27,12 +58,6 @@ async def fetch_gex(symbol: str = "SPY", expiry_index: int = 0, strikes_each_sid
         async for quote in streamer.listen(Quote):
             spot = float(quote.bid_price + quote.ask_price) / 2
             break
-
-    # Option chain + expiry
-    chain = await get_option_chain(session, symbol)
-    available = sorted(chain.keys())
-    expiry = available[expiry_index]
-    contracts = chain[expiry]
 
     # Strike window
     spot_d = Decimal(str(spot))
@@ -42,35 +67,24 @@ async def fetch_gex(symbol: str = "SPY", expiry_index: int = 0, strikes_each_sid
     selected_strikes = set(strikes_below + strikes_above)
     contracts_near_spot = [c for c in contracts if c.strike_price in selected_strikes]
     streamer_symbols = [c.streamer_symbol for c in contracts_near_spot]
+    n = len(contracts_near_spot)
 
-    # Collect OI and Greeks (wait 3s after first full snapshot for fresh values)
     oi = {}
     greeks_data = {}
-    n = len(contracts_near_spot)
 
     async with DXLinkStreamer(session) as streamer:
         await streamer.subscribe(Summary, streamer_symbols)
         await streamer.subscribe(Greeks, streamer_symbols)
 
-        async def collect_summary():
-            async for summary in streamer.listen(Summary):
-                oi[summary.event_symbol] = int(summary.open_interest or 0)
+        async for summary in streamer.listen(Summary):
+            oi[summary.event_symbol] = int(summary.open_interest or 0)
+            if len(oi) >= n:
+                break
 
-        deadline = [None]
-
-        async def collect_greeks():
-            async for greek in streamer.listen(Greeks):
-                greeks_data[greek.event_symbol] = greek
-                if len(greeks_data) >= n and deadline[0] is None:
-                    deadline[0] = asyncio.get_event_loop().time() + 3.0
-                if deadline[0] and asyncio.get_event_loop().time() >= deadline[0]:
-                    break
-
-        await asyncio.gather(
-            asyncio.wait_for(collect_summary(), timeout=15),
-            collect_greeks(),
-            return_exceptions=True,
-        )
+        async for greek in streamer.listen(Greeks):
+            greeks_data[greek.event_symbol] = greek
+            if len(greeks_data) >= n:
+                break
 
     # Aggregate per strike
     symbol_to_contract = {c.streamer_symbol: c for c in contracts_near_spot}
@@ -81,38 +95,60 @@ async def fetch_gex(symbol: str = "SPY", expiry_index: int = 0, strikes_each_sid
         per_strike.setdefault(strike, {
             "strike": strike,
             "call_gex": 0.0, "put_gex": 0.0,
+            "call_dex": 0.0, "put_dex": 0.0,
             "call_oi": 0, "put_oi": 0,
             "call_gamma": 0.0, "put_gamma": 0.0,
+            "call_delta": 0.0, "put_delta": 0.0,
         })
         open_interest = oi.get(sym, 0)
         gex = float(g.gamma) * open_interest * (spot ** 2)
+        # DEX: delta × OI × 100 × spot. Put delta is already negative.
+        dex = float(g.delta) * open_interest * 100 * spot
         if c.option_type.value == 'C':
-            per_strike[strike]["call_gex"] = gex
-            per_strike[strike]["call_oi"] = open_interest
+            per_strike[strike]["call_gex"] += gex
+            per_strike[strike]["call_dex"] += dex
+            per_strike[strike]["call_oi"] += open_interest
             per_strike[strike]["call_gamma"] = float(g.gamma)
+            per_strike[strike]["call_delta"] = float(g.delta)
         else:
-            per_strike[strike]["put_gex"] = -gex
-            per_strike[strike]["put_oi"] = open_interest
+            per_strike[strike]["put_gex"] += -gex
+            per_strike[strike]["put_dex"] += dex  # delta already negative, just add
+            per_strike[strike]["put_oi"] += open_interest
             per_strike[strike]["put_gamma"] = float(g.gamma)
+            per_strike[strike]["put_delta"] = float(g.delta)
 
     strikes = sorted(per_strike.values(), key=lambda x: x["strike"])
     for s in strikes:
         s["net_gex"] = s["call_gex"] + s["put_gex"]
+        s["net_dex"] = s["call_dex"] + s["put_dex"]
 
     total_call_gex = sum(s["call_gex"] for s in strikes)
     total_put_gex = sum(s["put_gex"] for s in strikes)
     net_gex = total_call_gex + total_put_gex
-    call_wall = max(strikes, key=lambda x: x["net_gex"])["strike"] if strikes else None
-    put_wall = min(strikes, key=lambda x: x["net_gex"])["strike"] if strikes else None
+    total_call_dex = sum(s["call_dex"] for s in strikes)
+    total_put_dex = sum(s["put_dex"] for s in strikes)
+    net_dex = total_call_dex + total_put_dex
 
-    # Zero gamma: linear interpolation between sign flips
+    # Walls: largest call-only / put-only contribution (SpotGamma convention)
+    call_wall = max(strikes, key=lambda x: x["call_gex"])["strike"] if strikes else None
+    put_wall = min(strikes, key=lambda x: x["put_gex"])["strike"] if strikes else None
+    call_wall_dex = max(strikes, key=lambda x: x["call_dex"])["strike"] if strikes else None
+    put_wall_dex = min(strikes, key=lambda x: x["put_dex"])["strike"] if strikes else None
+
+    # Zero gamma: cumulative GEX sign flip (SpotGamma convention)
     zero_gamma = None
-    for i in range(1, len(strikes)):
-        a, b = strikes[i - 1], strikes[i]
-        if (a["net_gex"] <= 0 <= b["net_gex"]) or (a["net_gex"] >= 0 >= b["net_gex"]):
-            if b["net_gex"] != a["net_gex"]:
-                frac = -a["net_gex"] / (b["net_gex"] - a["net_gex"])
-                zero_gamma = a["strike"] + frac * (b["strike"] - a["strike"])
+    cum = 0.0
+    cum_points = []
+    for s in strikes:
+        cum += s["net_gex"]
+        cum_points.append((s["strike"], cum))
+    for i in range(1, len(cum_points)):
+        s1, c1 = cum_points[i - 1]
+        s2, c2 = cum_points[i]
+        if (c1 <= 0 <= c2) or (c1 >= 0 >= c2):
+            if c2 != c1:
+                frac = -c1 / (c2 - c1)
+                zero_gamma = s1 + frac * (s2 - s1)
             break
 
     return {
@@ -128,6 +164,11 @@ async def fetch_gex(symbol: str = "SPY", expiry_index: int = 0, strikes_each_sid
             "call_wall": call_wall,
             "put_wall": put_wall,
             "zero_gamma": zero_gamma,
+            "total_call_dex": total_call_dex,
+            "total_put_dex": total_put_dex,
+            "net_dex": net_dex,
+            "call_wall_dex": call_wall_dex,
+            "put_wall_dex": put_wall_dex,
         },
     }
 

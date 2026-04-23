@@ -29,7 +29,7 @@ async def main():
     chain = await get_option_chain(session, 'SPX')
 
     # 0 = soonest expiry (today/0DTE), 1 = next expiry, 2 = one after, etc.
-    EXPIRY_INDEX = 0
+    EXPIRY_INDEX = 1
 
     available = sorted(chain.keys())
     print(f"Available expiries: {available[:5]}")
@@ -76,25 +76,32 @@ async def main():
         g = greeks_data[sym]
         print(f"{sym:35} {c.strike_price:>8}  {c.option_type:>4}  {oi.get(sym, 0):>10,}  {g.gamma:>12.8f}  {g.delta:>8.4f}")
 
-    # Compute net GEX per strike (call + put combined)
+    # Compute net GEX and net DEX per strike (call + put combined)
+    # GEX = sign × gamma × OI × spot²     (calls +, puts -)
+    # DEX = delta × OI × 100 × spot        (put delta already negative, so add)
     gex_by_strike = {}
+    dex_by_strike = {}
     for sym, g in greeks_data.items():
         c = symbol_to_contract[sym]
         strike = float(c.strike_price)
         open_interest = oi.get(sym, 0)
         sign = 1 if c.option_type.value == 'C' else -1
         gex = sign * float(g.gamma) * open_interest * (spot ** 2)
+        dex = float(g.delta) * open_interest * 100 * spot
         gex_by_strike[strike] = gex_by_strike.get(strike, 0) + gex
+        dex_by_strike[strike] = dex_by_strike.get(strike, 0) + dex
 
-    print(f"\n{'Strike':>8}  {'Net GEX ($)':>18}")
-    print("-" * 30)
+    print(f"\n{'Strike':>8}  {'Net GEX ($)':>18}  {'Net DEX ($)':>18}")
+    print("-" * 52)
     total_gex = 0
+    total_dex = 0
     for strike in sorted(gex_by_strike):
-        net = gex_by_strike[strike]
-        total_gex += net
-        bar = "+" if net >= 0 else "-"
-        print(f"{strike:>8.2f}  {net:>18,.0f}  {bar}")
-    print("-" * 30)
-    print(f"{'Net GEX':>8}  {total_gex:>18,.0f}")
+        gex = gex_by_strike[strike]
+        dex = dex_by_strike[strike]
+        total_gex += gex
+        total_dex += dex
+        print(f"{strike:>8.2f}  {gex:>18,.0f}  {dex:>18,.0f}")
+    print("-" * 52)
+    print(f"{'TOTAL':>8}  {total_gex:>18,.0f}  {total_dex:>18,.0f}")
 
 asyncio.run(main())

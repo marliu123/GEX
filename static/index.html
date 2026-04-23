@@ -203,23 +203,19 @@
       Gamma Exposure (GEX)
     </div>
     <div class="tabs">
-      <button class="tab active">Gamma Exposure</button>
-      <button class="tab">Open Interest</button>
+      <button class="tab active" data-tab="gex">Gamma Exposure</button>
+      <button class="tab" data-tab="dex">Delta Exposure</button>
     </div>
   </header>
 
   <div class="filters-row">
     <input id="symbol" class="symbol-input" value="SPX">
     <div class="pill-group">
-      <button class="pill active" data-view="net">Net GEX</button>
+      <button class="pill active" data-view="net" id="pillNet">Net GEX</button>
       <button class="pill" data-view="callput">Call/Put</button>
     </div>
     <select id="expiry" class="expiry-select">
-      <option value="0">Nearest expiry</option>
-      <option value="1">+1 expiry</option>
-      <option value="2">+2 expiry</option>
-      <option value="3">+3 expiry</option>
-      <option value="4">+4 expiry</option>
+      <option value="0">Loading...</option>
     </select>
     <button class="refresh-btn" id="refresh">↻ Refresh</button>
   </div>
@@ -237,22 +233,22 @@
         <div class="sub" id="symbolDisp">—</div>
       </div>
       <div class="card">
-        <div class="label">Net GEX</div>
+        <div class="label" id="netGexLabel">Net GEX</div>
         <div class="value" id="netGex">—</div>
         <div class="sub" id="netGexRatio">—</div>
       </div>
       <div class="card">
-        <div class="label">Call GEX</div>
+        <div class="label" id="callGexLabel">Call GEX</div>
         <div class="value green" id="callGex">—</div>
         <div class="sub" id="callOi">—</div>
       </div>
       <div class="card">
-        <div class="label">Put GEX</div>
+        <div class="label" id="putGexLabel">Put GEX</div>
         <div class="value red" id="putGex">—</div>
         <div class="sub" id="putOi">—</div>
       </div>
       <div class="card">
-        <div class="label">Total GEX</div>
+        <div class="label" id="totalGexLabel">Total GEX</div>
         <div class="value" id="totalGex">—</div>
         <div class="sub" id="totalOi">—</div>
       </div>
@@ -267,7 +263,7 @@
         <div class="sub" id="putWallPct">—</div>
       </div>
       <div class="card">
-        <div class="label">Zero Gamma</div>
+        <div class="label" id="zeroGammaLabel">Zero Gamma</div>
         <div class="value" id="zeroGamma">—</div>
         <div class="sub" id="zeroGammaPct">—</div>
       </div>
@@ -295,6 +291,7 @@ if (window.Chart && window['chartjs-plugin-annotation']) {
 let chart = null;
 let currentData = null;
 let currentView = 'net';
+let currentTab = 'gex';  // 'gex' or 'dex'
 
 function fmtMoney(n, digits = 2) {
   if (n === null || n === undefined || isNaN(n)) return '—';
@@ -340,6 +337,16 @@ async function loadData() {
     if (!r.ok) throw new Error('API error ' + r.status);
     const data = await r.json();
     currentData = data;
+
+    // Populate expiry dropdown with actual dates
+    const expirySelect = document.getElementById('expiry');
+    if (data.available_expiries && data.available_expiries.length > 0) {
+      const current = expirySelect.value;
+      expirySelect.innerHTML = data.available_expiries.map((d, i) =>
+        `<option value="${i}" ${i == current ? 'selected' : ''}>${d}</option>`
+      ).join('');
+    }
+
     renderAll();
     statusEl.style.display = 'none';
     contentEl.style.display = 'block';
@@ -363,46 +370,77 @@ function renderAll() {
 
   const totalOiCall = data.strikes.reduce((s, x) => s + (x.call_oi || 0), 0);
   const totalOiPut  = data.strikes.reduce((s, x) => s + (x.put_oi  || 0), 0);
-  const totalGex = Math.abs(data.summary.total_call_gex) + Math.abs(data.summary.total_put_gex);
 
   document.getElementById('spot').textContent = '$' + data.spot.toFixed(2);
   document.getElementById('symbolDisp').textContent = data.symbol;
 
-  document.getElementById('netGex').textContent = fmtMoney(data.summary.net_gex);
-  document.getElementById('netGex').className = 'value ' + (data.summary.net_gex >= 0 ? 'green' : 'red');
-  const ratio = data.summary.total_put_gex !== 0
-    ? (data.summary.total_call_gex / Math.abs(data.summary.total_put_gex)).toFixed(2)
-    : '—';
+  const isDex = currentTab === 'dex';
+  const netKey   = isDex ? 'net_dex'       : 'net_gex';
+  const callKey  = isDex ? 'total_call_dex': 'total_call_gex';
+  const putKey   = isDex ? 'total_put_dex' : 'total_put_gex';
+  const callWKey = isDex ? 'call_wall_dex' : 'call_wall';
+  const putWKey  = isDex ? 'put_wall_dex'  : 'put_wall';
+
+  const netVal  = data.summary[netKey];
+  const callVal = data.summary[callKey];
+  const putVal  = data.summary[putKey];
+  const total   = Math.abs(callVal) + Math.abs(putVal);
+
+  // Net
+  document.getElementById('netGexLabel').textContent = isDex ? 'Net DEX' : 'Net GEX';
+  document.getElementById('netGex').textContent = fmtMoney(netVal);
+  document.getElementById('netGex').className = 'value ' + (netVal >= 0 ? 'green' : 'red');
+  const ratio = putVal !== 0 ? (callVal / Math.abs(putVal)).toFixed(2) : '—';
   document.getElementById('netGexRatio').textContent = 'Ratio ' + ratio;
 
-  document.getElementById('callGex').textContent = fmtMoney(data.summary.total_call_gex);
+  // Call / Put
+  document.getElementById('callGexLabel').textContent = isDex ? 'Call DEX' : 'Call GEX';
+  document.getElementById('callGex').textContent = fmtMoney(callVal);
   document.getElementById('callOi').textContent = fmtNum(totalOiCall) + ' OI';
 
-  document.getElementById('putGex').textContent = fmtMoney(data.summary.total_put_gex);
+  document.getElementById('putGexLabel').textContent = isDex ? 'Put DEX' : 'Put GEX';
+  document.getElementById('putGex').textContent = fmtMoney(putVal);
   document.getElementById('putOi').textContent = fmtNum(totalOiPut) + ' OI';
 
-  document.getElementById('totalGex').textContent = fmtMoney(totalGex);
+  // Total
+  document.getElementById('totalGexLabel').textContent = isDex ? 'Total DEX' : 'Total GEX';
+  document.getElementById('totalGex').textContent = fmtMoney(total);
   document.getElementById('totalOi').textContent = fmtNum(totalOiCall + totalOiPut) + ' OI';
 
-  document.getElementById('callWall').textContent = data.summary.call_wall ?? '—';
-  document.getElementById('callWallPct').innerHTML = fmtPct(data.summary.call_wall, data.spot);
+  // Walls
+  document.getElementById('callWall').textContent = data.summary[callWKey] ?? '—';
+  document.getElementById('callWallPct').innerHTML = fmtPct(data.summary[callWKey], data.spot);
+  document.getElementById('putWall').textContent = data.summary[putWKey] ?? '—';
+  document.getElementById('putWallPct').innerHTML = fmtPct(data.summary[putWKey], data.spot);
 
-  document.getElementById('putWall').textContent = data.summary.put_wall ?? '—';
-  document.getElementById('putWallPct').innerHTML = fmtPct(data.summary.put_wall, data.spot);
-
-  document.getElementById('zeroGamma').textContent =
-    data.summary.zero_gamma ? data.summary.zero_gamma.toFixed(2) : 'N/A';
-  document.getElementById('zeroGammaPct').innerHTML =
-    data.summary.zero_gamma ? fmtPct(data.summary.zero_gamma, data.spot) : '—';
+  // Zero gamma only makes sense for GEX
+  const zeroLabel = document.getElementById('zeroGammaLabel');
+  if (isDex) {
+    zeroLabel.textContent = 'Zero Delta';
+    document.getElementById('zeroGamma').textContent = 'N/A';
+    document.getElementById('zeroGammaPct').innerHTML = '—';
+  } else {
+    zeroLabel.textContent = 'Zero Gamma';
+    document.getElementById('zeroGamma').textContent =
+      data.summary.zero_gamma ? data.summary.zero_gamma.toFixed(2) : 'N/A';
+    document.getElementById('zeroGammaPct').innerHTML =
+      data.summary.zero_gamma ? fmtPct(data.summary.zero_gamma, data.spot) : '—';
+  }
 
   renderChart(data);
 }
 
 function renderChart(data) {
+  const isDex = currentTab === 'dex';
+  const callKey = isDex ? 'call_dex' : 'call_gex';
+  const putKey  = isDex ? 'put_dex'  : 'put_gex';
+  const netKey  = isDex ? 'net_dex'  : 'net_gex';
+  const metricName = isDex ? 'DEX' : 'GEX';
+
   const strikes = data.strikes.map(s => s.strike);
-  const callGex = data.strikes.map(s => s.call_gex);
-  const putGex  = data.strikes.map(s => s.put_gex);
-  const netGex  = data.strikes.map(s => s.net_gex);
+  const callGex = data.strikes.map(s => s[callKey]);
+  const putGex  = data.strikes.map(s => s[putKey]);
+  const netGex  = data.strikes.map(s => s[netKey]);
 
   // Find closest strike index to spot for annotation
   let spotIdx = 0, minDist = Infinity;
@@ -416,9 +454,8 @@ function renderChart(data) {
 
   let datasets;
   if (isNet) {
-    // Color bars green if positive, red if negative
     datasets = [{
-      label: 'Net GEX',
+      label: 'Net ' + metricName,
       data: netGex,
       backgroundColor: netGex.map(v => v >= 0 ? '#10b981' : '#ef4444'),
       borderRadius: 3,
@@ -427,14 +464,14 @@ function renderChart(data) {
   } else {
     datasets = [
       {
-        label: 'Call Gamma',
+        label: 'Call ' + metricName,
         data: callGex,
         backgroundColor: '#10b981',
         borderRadius: 3,
         borderSkipped: false,
       },
       {
-        label: 'Put Gamma',
+        label: 'Put ' + metricName,
         data: putGex,
         backgroundColor: '#ef4444',
         borderRadius: 3,
@@ -451,13 +488,7 @@ function renderChart(data) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      animation: {
-        duration: 800,
-        easing: 'easeOutQuart',
-      },
-      transitions: {
-        active: { animation: { duration: 300 } },
-      },
+      animation: { duration: 200 },
       plugins: {
         legend: { display: false },
         tooltip: {
@@ -537,6 +568,16 @@ document.querySelectorAll('.pill').forEach(p => {
     p.classList.add('active');
     currentView = p.dataset.view;
     if (currentData) renderChart(currentData);
+  });
+});
+
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    currentTab = t.dataset.tab;
+    document.getElementById('pillNet').textContent = currentTab === 'dex' ? 'Net DEX' : 'Net GEX';
+    if (currentData) renderAll();
   });
 });
 
