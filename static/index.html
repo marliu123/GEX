@@ -5,6 +5,7 @@
 <title>GEX Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
 <style>
   :root {
     --bg: #0a0e1a;
@@ -193,6 +194,83 @@
 
   #content { transition: opacity 0.3s; }
   #content.loading-state { opacity: 0.4; pointer-events: none; }
+
+  .analyze-btn {
+    background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
+    color: white; border: none; padding: 9px 16px;
+    border-radius: 8px; font-size: 13px; font-weight: 500;
+    cursor: pointer; transition: all 0.2s;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .analyze-btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+  .analyze-btn:active { transform: translateY(0); }
+  .analyze-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(4px);
+    display: none; align-items: center; justify-content: center;
+    z-index: 100; padding: 20px;
+  }
+  .modal-backdrop.open { display: flex; animation: fadeIn 0.2s; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+  .modal {
+    background: var(--panel); border: 1px solid var(--border-light);
+    border-radius: 14px; width: 100%; max-width: 780px;
+    max-height: 85vh; display: flex; flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  }
+  .modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 22px; border-bottom: 1px solid var(--border);
+  }
+  .modal-title {
+    font-size: 15px; font-weight: 600; color: var(--text);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .modal-title::before {
+    content: ''; width: 3px; height: 16px;
+    background: linear-gradient(180deg, #8b5cf6, #6366f1);
+    border-radius: 2px;
+  }
+  .modal-subtitle { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .modal-close {
+    background: transparent; border: none; color: var(--muted);
+    font-size: 22px; cursor: pointer; padding: 4px 10px;
+    border-radius: 6px; transition: all 0.2s; line-height: 1;
+  }
+  .modal-close:hover { background: var(--panel-2); color: var(--text); }
+  .modal-body {
+    padding: 22px; overflow-y: auto; flex: 1;
+    color: var(--text-2); font-size: 14px; line-height: 1.6;
+  }
+  .modal-body h1, .modal-body h2, .modal-body h3 {
+    color: var(--text); margin-top: 20px; margin-bottom: 10px;
+  }
+  .modal-body h1 { font-size: 18px; }
+  .modal-body h2 { font-size: 16px; }
+  .modal-body h3 { font-size: 14px; }
+  .modal-body p { margin: 10px 0; }
+  .modal-body ul, .modal-body ol { margin: 10px 0; padding-left: 22px; }
+  .modal-body li { margin: 4px 0; }
+  .modal-body code {
+    background: var(--panel-2); padding: 2px 6px;
+    border-radius: 4px; font-size: 13px;
+    color: #f59e0b; font-family: ui-monospace, monospace;
+  }
+  .modal-body strong { color: var(--text); }
+  .modal-body .stream-cursor {
+    display: inline-block; width: 8px; height: 14px;
+    background: var(--blue); vertical-align: text-bottom;
+    animation: blink 1s infinite; margin-left: 2px;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .modal-body.is-error {
+    background: var(--red-soft); color: var(--red);
+    border-radius: 8px; padding: 14px 18px;
+    margin: 0 22px 22px; flex: none;
+  }
 </style>
 </head>
 <body>
@@ -217,7 +295,8 @@
     <select id="expiry" class="expiry-select">
       <option value="0">Loading...</option>
     </select>
-    <button class="refresh-btn" id="refresh">↻ Refresh</button>
+    <button class="analyze-btn" id="analyze" style="margin-left: auto;">✨ Analyze with AI</button>
+    <button class="refresh-btn" id="refresh" style="margin-left: 0;">↻ Refresh</button>
   </div>
 
   <div id="status" class="loading">
@@ -280,6 +359,19 @@
       </div>
       <div class="chart-container"><canvas id="chart"></canvas></div>
     </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="analyzeModal">
+  <div class="modal" role="dialog" aria-labelledby="analyzeTitle">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="analyzeTitle">AI Analysis</div>
+        <div class="modal-subtitle" id="analyzeSubtitle">—</div>
+      </div>
+      <button class="modal-close" id="analyzeClose" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" id="analyzeBody"></div>
   </div>
 </div>
 
@@ -579,6 +671,91 @@ document.querySelectorAll('.tab').forEach(t => {
     document.getElementById('pillNet').textContent = currentTab === 'dex' ? 'Net DEX' : 'Net GEX';
     if (currentData) renderAll();
   });
+});
+
+// ---- AI Analysis ----
+let analyzeAbort = null;
+
+function openAnalyzeModal() {
+  document.getElementById('analyzeModal').classList.add('open');
+}
+function closeAnalyzeModal() {
+  document.getElementById('analyzeModal').classList.remove('open');
+  if (analyzeAbort) { analyzeAbort.abort(); analyzeAbort = null; }
+}
+
+async function runAnalysis() {
+  if (!currentData) return;
+
+  const body = document.getElementById('analyzeBody');
+  const subtitle = document.getElementById('analyzeSubtitle');
+  body.classList.remove('is-error');
+  body.innerHTML = '<span class="stream-cursor"></span>';
+  subtitle.textContent = `${currentData.symbol} · spot $${currentData.spot.toFixed(2)} · expiry ${currentData.expiry}`;
+  openAnalyzeModal();
+
+  analyzeAbort = new AbortController();
+  let accumulated = '';
+
+  try {
+    const res = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentData),
+      signal: analyzeAbort.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let sepIdx;
+      while ((sepIdx = buffer.indexOf('\n\n')) !== -1) {
+        const rawEvent = buffer.slice(0, sepIdx);
+        buffer = buffer.slice(sepIdx + 2);
+        const dataLine = rawEvent.split('\n').find(l => l.startsWith('data: '));
+        if (!dataLine) continue;
+        let evt;
+        try { evt = JSON.parse(dataLine.slice(6)); } catch { continue; }
+
+        if (evt.error) {
+          body.classList.add('is-error');
+          body.textContent = `Error: ${evt.error}`;
+          return;
+        }
+        if (evt.text) {
+          accumulated += evt.text;
+          body.innerHTML = marked.parse(accumulated) + '<span class="stream-cursor"></span>';
+          body.scrollTop = body.scrollHeight;
+        }
+        if (evt.done) {
+          body.innerHTML = marked.parse(accumulated);
+          return;
+        }
+      }
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    body.classList.add('is-error');
+    body.textContent = `Request failed: ${err.message}`;
+  } finally {
+    analyzeAbort = null;
+  }
+}
+
+document.getElementById('analyze').addEventListener('click', runAnalysis);
+document.getElementById('analyzeClose').addEventListener('click', closeAnalyzeModal);
+document.getElementById('analyzeModal').addEventListener('click', e => {
+  if (e.target.id === 'analyzeModal') closeAnalyzeModal();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeAnalyzeModal();
 });
 
 // Auto-load on first visit

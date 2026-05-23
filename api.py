@@ -1,15 +1,19 @@
 import asyncio
+import json
 import os
 from datetime import date
 from decimal import Decimal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from tastytrade import Session, DXLinkStreamer
 from tastytrade.instruments import get_option_chain
 from tastytrade.dxfeed import Greeks, Quote, Summary
+
+from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBlock
 
 load_dotenv()
 CLIENT_SECRET = os.environ["TASTYTRADE_CLIENT_SECRET"]
@@ -176,6 +180,84 @@ async def fetch_gex(symbol: str = "SPY", expiry_index: int = 0, strikes_each_sid
 @app.get("/api/gex")
 async def get_gex(symbol: str = "SPY", expiry_index: int = 0, strikes_each_side: int = 20):
     return await fetch_gex(symbol, expiry_index, strikes_each_side)
+
+
+ANALYZE_SYSTEM_PROMPT = """You are an options flow analyst. You are given a JSON snapshot of gamma exposure (GEX) and delta exposure (DEX) per strike for a given symbol and expiry. Write a concise, actionable interpretation for a discretionary trader.
+
+Cover, in this order:
+1. **Dealer positioning regime** — Is net GEX positive (dealers long gamma, vol-suppressing, mean-reverting) or negative (dealers short gamma, vol-amplifying, trend-following)? What does this imply for intraday behavior?
+2. **Key levels** — Call wall (upside magnet/resistance), put wall (downside support), zero-gamma flip (regime boundary). Reference actual strike numbers and distance from spot in %.
+3. **Spot context** — Where is spot sitting relative to walls and zero-gamma? Is price pinned near a large-OI strike?
+4. **Notable concentrations** — Any single strike dominating GEX or DEX? Any unusual put/call skew?
+5. **Trade-relevant takeaway** — 1-2 sentences: what should a trader watch for or avoid today?
+
+Be specific with numbers. Skip throat-clearing. Use markdown headings and bullet points. Do NOT hedge with "I cannot provide financial advice" — the user is a trader consuming their own data."""
+
+
+def _format_gex_payload(payload: dict) -> str:
+    summary = payload.get("summary", {})
+    strikes = payload.get("strikes", [])
+    trimmed = [
+        {
+            "strike": s["strike"],
+            "call_gex": round(s["call_gex"], 2),
+            "put_gex": round(s["put_gex"], 2),
+            "net_gex": round(s["net_gex"], 2),
+            "call_dex": round(s["call_dex"], 2),
+            "put_dex": round(s["put_dex"], 2),
+            "call_oi": s["call_oi"],
+            "put_oi": s["put_oi"],
+        }
+        for s in strikes
+    ]
+    return json.dumps(
+        {
+            "symbol": payload.get("symbol"),
+            "spot": payload.get("spot"),
+            "expiry": payload.get("expiry"),
+            "summary": summary,
+            "strikes": trimmed,
+        },
+        indent=2,
+    )
+
+
+@app.post("/api/analyze")
+async def analyze(request: Request):
+    payload = await request.json()
+
+    if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") and not os.environ.get("ANTHROPIC_API_KEY"):
+        return StreamingResponse(
+            iter([f"data: {json.dumps({'error': 'CLAUDE_CODE_OAUTH_TOKEN is not set on the server. Run `claude setup-token` locally and set it as a Fly.io secret.'})}\n\n"]),
+            media_type="text/event-stream",
+        )
+
+    prompt = (
+        f"Analyze this GEX snapshot and return a markdown-formatted interpretation:\n\n"
+        f"```json\n{_format_gex_payload(payload)}\n```"
+    )
+    options = ClaudeAgentOptions(
+        system_prompt=ANALYZE_SYSTEM_PROMPT,
+        allowed_tools=[],
+        permission_mode="default",
+    )
+
+    async def event_stream():
+        try:
+            async for msg in query(prompt=prompt, options=options):
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock) and block.text:
+                            yield f"data: {json.dumps({'text': block.text})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
